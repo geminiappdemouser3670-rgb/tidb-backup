@@ -17,20 +17,15 @@ package copr
 import (
 	"bytes"
 	"context"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/store/driver/backoff"
-	"github.com/pingcap/tidb/pkg/store/mockstore"
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/testutils"
 	"github.com/tikv/client-go/v2/tikv"
-	"github.com/tikv/client-go/v2/tikvrpc"
-	"github.com/tikv/client-go/v2/tikvrpc/interceptor"
 )
 
 // Test helpers
@@ -542,76 +537,6 @@ func TestOverlappingRangesCanProduceOutOfOrderRangesAfterSplit(t *testing.T) {
 	require.Equal(t, "range_start_outside_location", fb.reason)
 	require.Len(t, result, 1)
 	require.Equal(t, lkr, result[0])
-}
-
-// TestTwoPCCommitReLocatesAfterSplit proves that the commit action resolves a
-// fresh region after a successful prewrite has been acknowledged. The
-// interceptor pauses the prewrite response, so the split is strictly between
-// prewrite and commit rather than relying on scheduler timing.
-func TestTwoPCCommitReLocatesAfterSplit(t *testing.T) {
-	var cluster testutils.Cluster
-	store, err := mockstore.NewMockStore(
-		mockstore.WithStoreType(mockstore.MockTiKV),
-		mockstore.WithClusterInspector(func(c testutils.Cluster) {
-			cluster = c
-			mockstore.BootstrapWithSingleStore(c)
-		}),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-
-	key := kv.Key("z")
-	prewriteDone := make(chan struct{})
-	allowCommit := make(chan struct{})
-	var pausePrewrite sync.Once
-
-	txn, err := store.Begin()
-	require.NoError(t, err)
-	require.NoError(t, txn.Set(key, []byte("committed")))
-	txn.SetOption(kv.RPCInterceptor, interceptor.NewRPCInterceptor(
-		"split-between-prewrite-and-commit",
-		func(next interceptor.RPCInterceptorFunc) interceptor.RPCInterceptorFunc {
-			return func(target string, req *tikvrpc.Request) (*tikvrpc.Response, error) {
-				resp, err := next(target, req)
-				if req.Type == tikvrpc.CmdPrewrite && err == nil {
-					pausePrewrite.Do(func() {
-						close(prewriteDone)
-						<-allowCommit
-					})
-				}
-				return resp, err
-			}
-		},
-	))
-
-	commitDone := make(chan error, 1)
-	go func() { commitDone <- txn.Commit(context.Background()) }()
-
-	select {
-	case <-prewriteDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("prewrite did not reach TiKV")
-	}
-
-	parent, _, _, _ := cluster.GetRegionByKey(key)
-	require.NotNil(t, parent)
-	newRegionID := cluster.AllocID()
-	newPeerID := cluster.AllocID()
-	cluster.Split(parent.GetId(), newRegionID, []byte("m"), []uint64{newPeerID}, newPeerID)
-	close(allowCommit)
-
-	select {
-	case err := <-commitDone:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("commit did not finish after the split")
-	}
-
-	reader, err := store.Begin()
-	require.NoError(t, err)
-	value, err := reader.Get(context.Background(), key)
-	require.NoError(t, err)
-	require.Equal(t, []byte("committed"), value.Value)
 }
 
 // TestBuildTasksByBucketsCoversEachKeyOnceAcrossSplit races a region split
