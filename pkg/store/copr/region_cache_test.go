@@ -15,6 +15,7 @@
 package copr
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"testing"
