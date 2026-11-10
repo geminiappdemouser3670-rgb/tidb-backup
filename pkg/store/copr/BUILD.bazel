@@ -103,6 +103,7 @@ go_test(
     deps = [
         "//pkg/kv",
         "//pkg/store/driver/backoff",
+        "//pkg/store/mockstore",
         "//pkg/testkit/testsetup",
         "//pkg/util/logutil",
         "//pkg/util/paging",
@@ -121,6 +122,7 @@ go_test(
         "@com_github_tikv_client_go_v2//testutils",
         "@com_github_tikv_client_go_v2//tikv",
         "@com_github_tikv_client_go_v2//tikvrpc",
+        "@com_github_tikv_client_go_v2//tikvrpc/interceptor",
         "@com_github_tikv_client_go_v2//util/async",
         "@org_uber_go_goleak//:goleak",
         "@org_uber_go_zap//:zap",
