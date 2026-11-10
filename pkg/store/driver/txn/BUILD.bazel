@@ -16,6 +16,7 @@ go_library(
     deps = [
         "//pkg/config/kerneltype",
         "//pkg/kv",
+        "//pkg/store/mockstore",
         "//pkg/meta/model",
         "//pkg/parser/mysql",
         "//pkg/store/driver/error",
@@ -48,6 +49,7 @@ go_test(
     name = "txn_test",
     timeout = "short",
     srcs = [
+        "2pc_split_test.go",
         "batch_getter_test.go",
         "driver_test.go",
         "main_test.go",
@@ -64,6 +66,9 @@ go_test(
         "@com_github_pingcap_kvproto//pkg/kvrpcpb",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@com_github_tikv_client_go_v2//testutils",
+        "@com_github_tikv_client_go_v2//tikvrpc",
+        "@com_github_tikv_client_go_v2//tikvrpc/interceptor",
         "@org_uber_go_goleak//:goleak",
     ],
 )
