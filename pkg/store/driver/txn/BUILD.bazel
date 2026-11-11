@@ -16,7 +16,6 @@ go_library(
     deps = [
         "//pkg/config/kerneltype",
         "//pkg/kv",
-        "//pkg/store/mockstore",
         "//pkg/meta/model",
         "//pkg/parser/mysql",
         "//pkg/store/driver/error",
@@ -60,6 +59,7 @@ go_test(
     shard_count = 5,
     deps = [
         "//pkg/kv",
+        "//pkg/store/mockstore",
         "//pkg/testkit/testsetup",
         "//pkg/util/mock",
         "@com_github_pingcap_errors//:errors",
