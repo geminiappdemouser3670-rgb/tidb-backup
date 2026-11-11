@@ -26,6 +26,7 @@ import (
 	driver "github.com/pingcap/tidb/pkg/store/driver/txn"
 	"github.com/pingcap/tidb/pkg/store/helper"
 	"github.com/tikv/client-go/v2/config"
+	"github.com/tikv/client-go/v2/config/retry"
 	"github.com/tikv/client-go/v2/tikv"
 	pd "github.com/tikv/pd/client"
 )
@@ -102,7 +103,13 @@ func (s *mockStorage) Describe() string {
 // Begin a global transaction.
 func (s *mockStorage) Begin(opts ...tikv.TxnOption) (kv.Transaction, error) {
 	txn, err := s.KVStore.Begin(opts...)
-	return newTiKVTxn(txn, err)
+	return newTiKVTxn(txn, err, func(ctx context.Context, regionID uint64) (uint64, uint64, error) {
+		loc, err := s.GetRegionCache().LocateRegionByIDFromPD(retry.NewBackoffer(ctx, 3000), regionID)
+		if err != nil {
+			return 0, 0, err
+		}
+		return loc.Region.GetVer(), loc.Region.GetConfVer(), nil
+	})
 }
 
 // ShowStatus returns the specified status of the storage
@@ -127,11 +134,11 @@ func (s *mockStorage) GetMinSafeTS(txnScope string) uint64 {
 	return 0
 }
 
-func newTiKVTxn(txn *tikv.KVTxn, err error) (kv.Transaction, error) {
+func newTiKVTxn(txn *tikv.KVTxn, err error, lookup driver.CommitRegionEpochLookup) (kv.Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	return driver.NewTiKVTxn(txn), nil
+	return driver.NewTiKVTxn(txn, lookup), nil
 }
 
 func (s *mockStorage) GetLockWaits() ([]*deadlockpb.WaitForEntry, error) {
