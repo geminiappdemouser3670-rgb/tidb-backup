@@ -45,7 +45,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// CommitRegionEpochLookup returns PD-authoritative epoch values for a region.\n// It is deliberately a value-only callback so TiDB does not import client-go internals.\ntype CommitRegionEpochLookup func(context.Context, uint64) (version, confVersion uint64, err error)\n\ntype tikvTxn struct {
+// CommitRegionEpochLookup returns PD-authoritative epoch values for a region.
+// It is deliberately a value-only callback so TiDB does not import client-go internals.
+type CommitRegionEpochLookup func(context.Context, uint64) (version, confVersion uint64, err error)
+
+type tikvTxn struct {
 	*tikv.KVTxn
 	idxNameCache        map[int64]*model.TableInfo
 	snapshotInterceptor kv.SnapshotInterceptor
