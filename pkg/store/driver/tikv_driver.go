@@ -39,6 +39,7 @@ import (
 	"github.com/pingcap/tidb/pkg/util/traceevent"
 	"github.com/pingcap/tidb/pkg/util/tracing"
 	"github.com/tikv/client-go/v2/config"
+	"github.com/tikv/client-go/v2/config/retry"
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/tikvrpc"
 	"github.com/tikv/client-go/v2/util"
@@ -442,7 +443,13 @@ func (s *tikvStore) Begin(opts ...tikv.TxnOption) (kv.Transaction, error) {
 	if err != nil {
 		return nil, derr.ToTiDBErr(err)
 	}
-	return txn_driver.NewTiKVTxn(txn), err
+	return txn_driver.NewTiKVTxn(txn, func(ctx context.Context, regionID uint64) (uint64, uint64, error) {
+		loc, err := s.GetRegionCache().LocateRegionByIDFromPD(retry.NewBackoffer(ctx, 3000), regionID)
+		if err != nil {
+			return 0, 0, err
+		}
+		return loc.Region.GetVer(), loc.Region.GetConfVer(), nil
+	}), err
 }
 
 // GetSnapshot gets a snapshot that is able to read any data which data is <= ver.
