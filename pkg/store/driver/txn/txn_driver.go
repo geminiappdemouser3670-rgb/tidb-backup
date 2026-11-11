@@ -22,6 +22,7 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
+	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/tidb/pkg/config/kerneltype"
@@ -44,7 +45,7 @@ import (
 	"go.uber.org/zap"
 )
 
-type tikvTxn struct {
+// CommitRegionEpochLookup returns PD-authoritative epoch values for a region.\n// It is deliberately a value-only callback so TiDB does not import client-go internals.\ntype CommitRegionEpochLookup func(context.Context, uint64) (version, confVersion uint64, err error)\n\ntype tikvTxn struct {
 	*tikv.KVTxn
 	idxNameCache        map[int64]*model.TableInfo
 	snapshotInterceptor kv.SnapshotInterceptor
@@ -52,10 +53,11 @@ type tikvTxn struct {
 	columnMapsCache    any
 	isCommitterWorking atomic.Bool
 	memBuffer          *memBuffer
+	commitEpochLookup  CommitRegionEpochLookup
 }
 
 // NewTiKVTxn returns a new Transaction.
-func NewTiKVTxn(txn *tikv.KVTxn) kv.Transaction {
+func NewTiKVTxn(txn *tikv.KVTxn, lookups ...CommitRegionEpochLookup) kv.Transaction {
 	txn.SetKVFilter(TiDBKVFilter{})
 
 	// init default size limits by config
@@ -63,11 +65,19 @@ func NewTiKVTxn(txn *tikv.KVTxn) kv.Transaction {
 	totalLimit := kv.TxnTotalSizeLimit.Load()
 	txn.GetUnionStore().SetEntrySizeLimit(entryLimit, totalLimit)
 
-	return &tikvTxn{
+	var lookup CommitRegionEpochLookup
+	if len(lookups) > 0 {
+		lookup = lookups[0]
+	}
+	driverTxn := &tikvTxn{
 		txn, make(map[int64]*model.TableInfo), nil, nil,
 		atomic.Bool{},
-		newMemBuffer(txn.GetMemBuffer(), txn.IsPipelined()),
+		newMemBuffer(txn.GetMemBuffer(), txn.IsPipelined()), lookup,
 	}
+	if lookup != nil {
+		driverTxn.KVTxn.AddRPCInterceptor(newCommitEpochFence(lookup))
+	}
+	return driverTxn
 }
 
 func (txn *tikvTxn) GetTableInfo(id int64) *model.TableInfo {
@@ -480,4 +490,24 @@ func (f TiDBKVFilter) IsUnnecessaryKeyValue(key, value []byte, flags tikvstore.K
 			kv.Key(key).String(), kv.Key(value).String(), flags)
 	}
 	return isUntouchedValue, nil
+}
+
+// newCommitEpochFence checks PD immediately before a commit RPC leaves the
+// client. A stale request is converted to EpochNotMatch so client-go owns the
+// normal invalidation, regrouping, and retry; prewrite and backoff are untouched.
+func newCommitEpochFence(lookup CommitRegionEpochLookup) interceptor.RPCInterceptor {
+	return interceptor.NewRPCInterceptor("commit-epoch-fence",
+		func(next interceptor.RPCInterceptorFunc) interceptor.RPCInterceptorFunc {
+			return func(target string, req *tikvrpc.Request) (*tikvrpc.Response, error) {
+				if req.Type == tikvrpc.CmdCommit && req.RegionEpoch != nil {
+					version, confVersion, err := lookup(context.Background(), req.RegionId)
+					if err == nil && (version != req.RegionEpoch.GetVersion() || confVersion != req.RegionEpoch.GetConfVer()) {
+						return &tikvrpc.Response{Resp: &kvrpcpb.CommitResponse{
+							RegionError: &errorpb.Error{EpochNotMatch: &errorpb.EpochNotMatch{}},
+						}}, nil
+					}
+				}
+				return next(target, req)
+			}
+		})
 }
